@@ -17,6 +17,13 @@ CREATE TABLE IF NOT EXISTS results (
     is_likely_phishing INTEGER,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS images (
+    image_key TEXT PRIMARY KEY,
+    image_data BLOB NOT NULL,
+    source TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 

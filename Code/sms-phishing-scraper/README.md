@@ -31,11 +31,22 @@ python main.py
 ```
 
 Results are stored in `data/results.db` (SQLite). Flagged posts are also printed to the console.
+The OCR export is written to `src/List.crv` with `photo_key` and cleaned `text` columns.
+
+To add images for the OCR export, store their bytes in the SQLite `images` table:
+
+```sql
+INSERT INTO images (image_key, image_data, source)
+VALUES ('photo-001', readfile('path/to/photo.png'), 'example');
+```
+
+The `image_key` is copied into the CSV as `photo_key`, keeping each extracted text value
+linked to the image it came from.
 
 ## Project layout
 
 - `src/config.py` — env config, default subreddits
-- `src/ocr.py` — image download + text extraction (pytesseract)
+- `src/ocr.py` — image download, text extraction, cleanup, and SQLite-to-CSV export
 - `src/phishing_detector.py` — keyword/URL heuristic scorer
 - `src/reddit_scraper.py` — pulls posts from subreddits via PRAW, extracts text/images
 - `src/storage.py` — SQLite persistence
