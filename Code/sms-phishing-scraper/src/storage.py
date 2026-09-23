@@ -41,7 +41,7 @@ def init_db() -> None:
 
     os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
     with get_connection() as conn:
-        conn.execute(SCHEMA)
+        conn.executescript(SCHEMA)
         conn.commit()
 
 
