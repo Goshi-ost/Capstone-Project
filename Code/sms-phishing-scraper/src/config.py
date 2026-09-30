@@ -22,4 +22,5 @@ DEFAULT_SUBREDDITS = ["Scams", "phishing", "IdentityTheft", "Scam"]
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "results.db")
 IMAGE_CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "images")
+IMAGE_TEST_DIR = os.path.join(os.path.dirname(__file__), "imageTest")
 OCR_CSV_PATH = os.path.join(os.path.dirname(__file__), "List.crv")

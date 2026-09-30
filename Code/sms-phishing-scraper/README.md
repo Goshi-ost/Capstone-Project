@@ -21,7 +21,7 @@ treat flagged results as candidates for review, not definitive verdicts.
    ```powershell
    python -m venv .venv
    .venv\Scripts\Activate.ps1
-   pip install -r requirements.txt
+   pip install -r src/requirements.txt
    ```
 
 ## Run
@@ -32,6 +32,15 @@ python main.py
 
 Results are stored in `data/results.db` (SQLite). Flagged posts are also printed to the console.
 The OCR export is written to `src/List.crv` with `photo_key` and cleaned `text` columns.
+
+The SMS detector trains a TF-IDF text classifier from `Resources/spam.csv`, tunes its
+hyperparameters with five-fold cross-validation on a randomized 90% training split, and
+reports accuracy and spam/ham metrics on the held-out 10%. Run it from this directory to
+view the evaluation and selected parameters:
+
+```powershell
+python src/phishing_detector.py
+```
 
 To add images for the OCR export, store their bytes in the SQLite `images` table:
 
@@ -47,7 +56,7 @@ linked to the image it came from.
 
 - `src/config.py` — env config, default subreddits
 - `src/ocr.py` — image download, text extraction, cleanup, and SQLite-to-CSV export
-- `src/phishing_detector.py` — keyword/URL heuristic scorer
+- `src/phishing_detector.py` — tuned TF-IDF SMS spam classifier and evaluation
 - `src/reddit_scraper.py` — pulls posts from subreddits via PRAW, extracts text/images
 - `src/storage.py` — SQLite persistence
 - `main.py` — entry point

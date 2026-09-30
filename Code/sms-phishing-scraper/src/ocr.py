@@ -4,6 +4,7 @@ import os
 import re
 import sqlite3
 import unicodedata
+from pathlib import Path
 
 import pytesseract
 import requests
@@ -18,7 +19,7 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 
 
 def clean_ocr_text(text: str) -> str:
-    """Normalize OCR output while preserving meaningful line breaks."""
+    """Normalize OCR output into a single readable line."""
     normalized = unicodedata.normalize("NFKC", text)
     cleaned_lines = []
     for line in normalized.splitlines():
@@ -26,7 +27,7 @@ def clean_ocr_text(text: str) -> str:
         line = re.sub(r"\s+", " ", line).strip()
         if line and (not cleaned_lines or line != cleaned_lines[-1]):
             cleaned_lines.append(line)
-    return "\n".join(cleaned_lines)
+    return " ".join(cleaned_lines)
 
 
 def is_image_url(url: str) -> bool:
@@ -56,6 +57,40 @@ def extract_text_from_url(url: str) -> str:
     if image is None:
         return ""
     return extract_text_from_image(image)
+
+
+def export_image_directory_to_csv(
+    image_dir: str | None = None,
+    csv_path: str | None = None,
+) -> int:
+    """OCR supported images in the image test folder and write their text to CSV."""
+    source_dir = Path(image_dir or config.IMAGE_TEST_DIR)
+    output_csv = csv_path or config.OCR_CSV_PATH
+    output_dir = os.path.dirname(output_csv)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    image_paths = sorted(
+        path
+        for path in source_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+    )
+    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=("photo_key", "text"))
+        writer.writeheader()
+        for image_path in image_paths:
+            try:
+                with Image.open(image_path) as image:
+                    text = extract_text_from_image(image.convert("RGB"))
+            except Exception:
+                text = ""
+            writer.writerow(
+                {
+                    "photo_key": image_path.relative_to(source_dir).as_posix(),
+                    "text": text,
+                }
+            )
+    return len(image_paths)
 
 
 def cache_image(url: str, post_id: str) -> str | None:
