@@ -1,9 +1,12 @@
+"""SQLite persistence for phishing analyses and downloaded image data."""
+
 import sqlite3
 from contextlib import contextmanager
 
 from . import config
 
 SCHEMA = """
+-- Store each analyzed post once, with its classification details.
 CREATE TABLE IF NOT EXISTS results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source TEXT NOT NULL,
@@ -18,6 +21,7 @@ CREATE TABLE IF NOT EXISTS results (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Keep downloaded image bytes keyed by their source-specific image identifier.
 CREATE TABLE IF NOT EXISTS images (
     image_key TEXT PRIMARY KEY,
     image_data BLOB NOT NULL,
@@ -27,6 +31,7 @@ CREATE TABLE IF NOT EXISTS images (
 """
 
 
+# Yield a database connection and close it even if the caller raises an exception.
 @contextmanager
 def get_connection():
     conn = sqlite3.connect(config.DB_PATH)
@@ -36,6 +41,7 @@ def get_connection():
         conn.close()
 
 
+# Create the database directory and initialize the configured tables.
 def init_db() -> None:
     import os
 
@@ -45,6 +51,7 @@ def init_db() -> None:
         conn.commit()
 
 
+# Insert a classification result unless its post ID has already been stored.
 def save_result(source: str, post_id: str, permalink: str, analysis) -> None:
     with get_connection() as conn:
         conn.execute(
