@@ -39,6 +39,7 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "sms_image_cl
 IMG_SIZE = 224
 MEAN, STD = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
 
+# Training augments images to reduce sensitivity to small visual variations.
 train_tf = transforms.Compose([
 	transforms.Resize((IMG_SIZE, IMG_SIZE)),
 	transforms.ColorJitter(0.2, 0.2, 0.2),
@@ -46,6 +47,7 @@ train_tf = transforms.Compose([
 	transforms.ToTensor(),
 	transforms.Normalize(MEAN, STD),
 ])
+# Validation and prediction use deterministic transforms for comparable results.
 eval_tf = transforms.Compose([
 	transforms.Resize((IMG_SIZE, IMG_SIZE)),
 	transforms.ToTensor(),
@@ -53,10 +55,12 @@ eval_tf = transforms.Compose([
 ])
 
 
+# Select a CUDA device when available and otherwise fall back to the CPU.
 def _device():
 	return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+# Create a ResNet-18 and replace its final layer for the requested class count.
 def build_model(num_classes=2, pretrained=True):
 	weights = models.ResNet18_Weights.DEFAULT if pretrained else None
 	model = models.resnet18(weights=weights)
@@ -64,6 +68,7 @@ def build_model(num_classes=2, pretrained=True):
 	return model
 
 
+# Train the image classifier and save the checkpoint with the best validation accuracy.
 def train(data_dir, epochs=10, batch_size=16, lr=1e-3, val_split=0.2, model_path=MODEL_PATH):
 	device = _device()
 	train_full = datasets.ImageFolder(data_dir, transform=train_tf)
@@ -92,6 +97,7 @@ def train(data_dir, epochs=10, batch_size=16, lr=1e-3, val_split=0.2, model_path
 	best_acc = -1.0
 
 	for epoch in range(1, epochs + 1):
+		# Train on augmented images, then evaluate on unaugmented validation images.
 		model.train()
 		for x, y in train_dl:
 			x, y = x.to(device), y.to(device)
@@ -118,6 +124,7 @@ def train(data_dir, epochs=10, batch_size=16, lr=1e-3, val_split=0.2, model_path
 class SmsImageClassifier:
 	"""Load a trained model and classify images."""
 
+	# Load the saved class labels and model weights onto the selected device.
 	def __init__(self, model_path=MODEL_PATH):
 		self.device = _device()
 		ckpt = torch.load(model_path, map_location=self.device)
@@ -126,8 +133,8 @@ class SmsImageClassifier:
 		self.model.load_state_dict(ckpt["state_dict"])
 		self.model.to(self.device).eval()
 
+	# Predict the class label and confidence score for one image.
 	def predict(self, image_path):
-		"""Return (label, confidence) for one image."""
 		img = Image.open(image_path).convert("RGB")
 		x = eval_tf(img).unsqueeze(0).to(self.device)
 		with torch.no_grad():
@@ -135,11 +142,13 @@ class SmsImageClassifier:
 		idx = int(probs.argmax())
 		return self.classes[idx], float(probs[idx])
 
+	# Check whether an image is classified as SMS above the confidence threshold.
 	def is_sms(self, image_path, threshold=0.5):
 		label, conf = self.predict(image_path)
 		return label == "sms" and conf >= threshold
 
 
+# Parse CLI options and dispatch to the training or prediction workflow.
 def main():
 	parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 	sub = parser.add_subparsers(dest="cmd", required=True)
