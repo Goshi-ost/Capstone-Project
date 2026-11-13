@@ -45,6 +45,15 @@ def init_db() -> None:
         conn.commit()
 
 
+def save_image(image_key: str, image_data: bytes, source: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO images (image_key, image_data, source) VALUES (?, ?, ?)",
+            (image_key, image_data, source),
+        )
+        conn.commit()
+
+
 def save_result(source: str, post_id: str, permalink: str, analysis) -> None:
     with get_connection() as conn:
         conn.execute(
