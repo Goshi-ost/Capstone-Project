@@ -12,7 +12,8 @@ import xml.etree.ElementTree as ET
 import requests
 from PIL import Image
 
-from . import config, ocr, phishing_detector, storage
+from .Tools import ocr, phishing_detector, storage
+from .configs import config
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
 REQUEST_DELAY = 1.5

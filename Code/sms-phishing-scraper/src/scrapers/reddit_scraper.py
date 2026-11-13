@@ -1,6 +1,7 @@
 import praw
 
-from . import config, ocr, phishing_detector, storage
+from ..Tools import ocr, phishing_detector, storage
+from ..configs import config
 
 
 def get_reddit_client() -> praw.Reddit:

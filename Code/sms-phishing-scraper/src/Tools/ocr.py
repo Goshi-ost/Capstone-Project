@@ -12,7 +12,7 @@ import pytesseract
 import requests
 from PIL import Image, ImageFilter, ImageOps, ImageStat
 
-from . import config
+from ..configs import config
 
 if config.TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = config.TESSERACT_CMD

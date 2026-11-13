@@ -24,7 +24,8 @@ DEFAULT_SUBREDDITS = ["Scams", "phishing", "IdentityTheft", "Scam"]
 MASTODON_TAGS = [("mastodon.social", "smishing"), ("mastodon.social", "scam"), ("infosec.exchange", "smishing")]
 LEMMY_QUERIES = [("lemmy.world", "scam text"), ("lemmy.world", "smishing")]
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "results.db")
-IMAGE_CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "images")
-IMAGE_TEST_DIR = os.path.join(os.path.dirname(__file__), "imageTest")
-OCR_CSV_PATH = os.path.join(os.path.dirname(__file__), "List.crv")
+SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(SRC_DIR, "..", "data", "results.db")
+IMAGE_CACHE_DIR = os.path.join(SRC_DIR, "..", "data", "images")
+IMAGE_TEST_DIR = os.path.join(SRC_DIR, "imageTest")
+OCR_CSV_PATH = os.path.join(SRC_DIR, "crv-files", "List.crv")

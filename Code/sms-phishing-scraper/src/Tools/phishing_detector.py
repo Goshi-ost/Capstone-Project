@@ -12,8 +12,8 @@ from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_sp
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 
-DATASET_PATH = Path(__file__).resolve().parents[3] / "Resources" / "spam.csv"
-OCR_CSV_PATH = Path(__file__).with_name("List.crv")
+DATASET_PATH = Path(__file__).resolve().parents[4] / "Resources" / "spam.csv"
+OCR_CSV_PATH = Path(__file__).resolve().parents[1] / "crv-files" / "List.crv"
 URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 SHORTENER_DOMAINS = {"bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly"}
 

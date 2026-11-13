@@ -1,4 +1,6 @@
-from src import config, ocr, public_scraper, storage
+from src import public_scraper
+from src.Tools import ocr, storage
+from src.configs import config
 
 
 def main() -> None:

@@ -3,7 +3,7 @@
 import sqlite3
 from contextlib import contextmanager
 
-from . import config
+from ..configs import config
 
 SCHEMA = """
 -- Store each analyzed post once, with its classification details.
