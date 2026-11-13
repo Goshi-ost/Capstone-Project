@@ -5,3 +5,5 @@ requests==2.32.3
 python-dotenv==1.0.1
 pandas>=2.2,<4
 scikit-learn>=1.5,<2
+torch>=2.2
+torchvision>=0.17

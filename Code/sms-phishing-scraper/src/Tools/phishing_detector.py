@@ -1,3 +1,5 @@
+"""Train an SMS spam classifier and analyze message text and embedded URLs."""
+
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +20,8 @@ SHORTENER_DOMAINS = {"bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly"}
 
 @dataclass
 class PhishingAnalysis:
+    """Classification result, including the score and any suspicious URLs."""
+
     text: str
     score: int = 0
     matched_keywords: list[str] = field(default_factory=list)
@@ -29,16 +33,20 @@ class PhishingAnalysis:
 
 @dataclass
 class EvaluationResult:
+    """Holdout-set metrics and selected parameters from model tuning."""
+
     accuracy: float
     report: str
     confusion_matrix: list[list[int]]
     best_params: dict
 
 
+# Find HTTP(S) URLs embedded in a message.
 def _extract_urls(text: str) -> list[str]:
     return URL_PATTERN.findall(text)
 
 
+# Check whether a URL's host matches a known link-shortening service.
 def _is_suspicious_url(url: str) -> bool:
     domain = url.lower().split("://", 1)[-1].split("/", 1)[0].removeprefix("www.")
     return domain in SHORTENER_DOMAINS
@@ -47,6 +55,7 @@ def _is_suspicious_url(url: str) -> bool:
 class PhishingDetector:
     """Tune an SMS spam classifier and retain a stratified 10% test set."""
 
+    # Store classifier configuration and initialize model/evaluation state.
     def __init__(
         self,
         dataset_path: Path = DATASET_PATH,
@@ -59,6 +68,7 @@ class PhishingDetector:
         self.model: Pipeline | None = None
         self.evaluation: EvaluationResult | None = None
 
+    # Tune candidate text classifiers and evaluate the winner on held-out data.
     def train_and_evaluate(self) -> EvaluationResult:
         data = pd.read_csv(self.dataset_path, encoding="latin-1", usecols=[0, 1])
         data.columns = ["label", "text"]
@@ -122,6 +132,7 @@ class PhishingDetector:
         )
         return self.evaluation
 
+    # Classify a message and return its spam probability and extracted URLs.
     def analyze(self, text: str) -> PhishingAnalysis:
         if self.model is None:
             self.train_and_evaluate()
@@ -141,10 +152,10 @@ class PhishingDetector:
             is_likely_phishing=prediction == "spam",
         )
 
+    # Classify non-empty CSV text rows and analyze any URL in each photo_key field.
     def classify_csv(
         self, csv_path: Path = OCR_CSV_PATH
     ) -> list[tuple[str, PhishingAnalysis | None, PhishingAnalysis]]:
-        """Classify a URL in the first column and the text column separately."""
         data = pd.read_csv(csv_path, encoding="utf-8")
         if "text" not in data.columns:
             raise ValueError(f"CSV must contain a 'text' column: {csv_path}")
@@ -164,8 +175,8 @@ class PhishingDetector:
 _detector: PhishingDetector | None = None
 
 
+# Classify text using a lazily created, shared phishing detector.
 def analyze_text(text: str) -> PhishingAnalysis:
-    """Classify text as spam/phishing using the tuned SMS model."""
     global _detector
     if _detector is None:
         _detector = PhishingDetector()
