@@ -1,5 +1,13 @@
-"""Train an SMS spam classifier and analyze message text and embedded URLs."""
+"""Classify SMS text as phishing: an ML spam model plus phishing lure-type rules.
 
+The ML model is trained on the UCI SMS Spam Collection (Resources/spam.csv), which
+labels spam vs. ham. Much spam is plain marketing, so a message is only flagged as
+phishing when the model says spam AND it matches a phishing lure category (delivery,
+banking, toll, credentials, ...) or contains a suspicious URL. Matched categories also
+give each message a type for the "categorize collected messages" analysis.
+"""
+
+import ipaddress
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,10 +20,70 @@ from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_sp
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 
+import joblib
+
 DATASET_PATH = Path(__file__).resolve().parents[4] / "Resources" / "spam.csv"
 OCR_CSV_PATH = Path(__file__).resolve().parents[1] / "crv-files" / "List.crv"
 URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
-SHORTENER_DOMAINS = {"bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly"}
+MODEL_PATH = Path(__file__).resolve().parents[2] / "data" / "models" / "text_classifier.joblib"
+# Bump when training code changes so stale saved models are retrained.
+MODEL_VERSION = 1
+
+SHORTENER_DOMAINS = {
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly",
+    "rebrand.ly", "cutt.ly", "shorturl.at", "rb.gy", "t.ly", "tiny.cc",
+}
+# TLDs heavily abused in smishing campaigns.
+RISKY_TLDS = {
+    "top", "xyz", "icu", "click", "live", "info", "vip", "cyou", "sbs", "cfd",
+    "buzz", "rest", "bond", "life", "online", "site", "shop", "support",
+}
+
+# Phishing lure categories. Each pattern is matched case-insensitively on word boundaries.
+PHISHING_CATEGORIES: dict[str, list[str]] = {
+    "delivery": [
+        r"package", r"parcel", r"shipment", r"re-?deliver\w*", r"delivery (?:attempt|failed|address)",
+        r"usps", r"fedex", r"dhl", r"royal mail", r"post office", r"customs fee", r"tracking (?:number|id)",
+    ],
+    "banking": [
+        r"bank", r"card ending", r"(?:unusual|suspicious) (?:activity|sign-?in|login)",
+        r"account (?:(?:has been|is|was) )?(?:locked|suspended|frozen|restricted|on hold|disabled)",
+        r"zelle", r"paypal", r"venmo", r"cash ?app", r"wire transfer", r"unauthori[sz]ed",
+    ],
+    "toll_fine": [
+        r"tolls?", r"unpaid", r"outstanding (?:balance|amount|invoice)", r"traffic (?:fine|ticket|violation)",
+        r"e-?z ?pass", r"sun ?pass", r"fastrak", r"parking (?:fine|ticket|violation)", r"late fee",
+    ],
+    "credentials": [
+        r"verify", r"verification", r"confirm (?:your|the) (?:identity|account|details|information)",
+        r"log ?in", r"password", r"one[- ]time (?:code|password|passcode)", r"otp", r"security code",
+        r"update (?:your )?(?:payment|billing) (?:info|information|details|method)",
+    ],
+    "prize": [
+        r"winner", r"you(?:'ve| have)? won", r"prize", r"reward points?", r"gift ?card",
+        r"claim (?:your|now|it)", r"congratulations", r"selected (?:to|for)",
+    ],
+    "government": [
+        r"irs", r"tax refund", r"hmrc", r"dmv", r"social security", r"medicare", r"stimulus",
+        r"court (?:date|summons)", r"warrant",
+    ],
+    "crypto_investment": [
+        r"bitcoin", r"crypto\w*", r"usdt", r"investment", r"trading (?:platform|account)",
+        r"guaranteed (?:profit|returns?)",
+    ],
+    "job": [r"hiring", r"recruit\w*", r"remote (?:job|work|position)", r"part[- ]time", r"per (?:day|hour)", r"job offer"],
+    "impersonation": [r"hi (?:mum|mom|dad)", r"(?:my )?new number", r"lost my phone", r"wrong number"],
+    "urgency": [
+        r"urgent", r"immediately", r"within \d+ (?:hours?|hrs|days?)", r"final (?:notice|reminder|warning)",
+        r"act now", r"expires? (?:today|soon|in)", r"(?:will be|to avoid) (?:suspended|cancell?ed|closed|charged)",
+    ],
+}
+# Urgency is a supporting signal, not a lure type: marketing spam is urgent too.
+_NON_LURE_CATEGORIES = {"urgency"}
+_CATEGORY_RES = {
+    name: re.compile(r"\b(?:" + "|".join(patterns) + r")\b", re.IGNORECASE)
+    for name, patterns in PHISHING_CATEGORIES.items()
+}
 
 
 @dataclass
@@ -46,10 +114,40 @@ def _extract_urls(text: str) -> list[str]:
     return URL_PATTERN.findall(text)
 
 
-# Check whether a URL's host matches a known link-shortening service.
+# Flag link shorteners, raw-IP hosts, punycode lookalike domains, and abused TLDs.
 def _is_suspicious_url(url: str) -> bool:
-    domain = url.lower().split("://", 1)[-1].split("/", 1)[0].removeprefix("www.")
-    return domain in SHORTENER_DOMAINS
+    host = url.lower().split("://", 1)[-1].split("/", 1)[0].split("@")[-1].split(":")[0]
+    host = host.removeprefix("www.").rstrip(".")
+    if host in SHORTENER_DOMAINS:
+        return True
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    if any(label.startswith("xn--") for label in host.split(".")):
+        return True
+    return host.rsplit(".", 1)[-1] in RISKY_TLDS
+
+
+# Return the matched phishing categories and the keywords that triggered them.
+def categorize(text: str) -> tuple[list[str], list[str]]:
+    categories, keywords = [], []
+    for name, pattern in _CATEGORY_RES.items():
+        hits = {m.group(0).lower() for m in pattern.finditer(text)}
+        if hits:
+            categories.append(name)
+            keywords.extend(sorted(hits))
+    return categories, list(dict.fromkeys(keywords))
+
+
+# Phishing = the model says spam AND there is a lure or a suspicious link, OR a lure plus a
+# suspicious link regardless of the model (the 2012-era training data misses modern
+# smishing such as toll and delivery scams).
+def is_phishing(is_spam: bool, categories: list[str], suspicious_urls: list[str]) -> bool:
+    has_lure = any(c not in _NON_LURE_CATEGORIES for c in categories)
+    has_bad_link = bool(suspicious_urls)
+    return (is_spam and (has_lure or has_bad_link)) or (has_lure and has_bad_link)
 
 
 class PhishingDetector:
@@ -67,6 +165,44 @@ class PhishingDetector:
         self.test_size = test_size
         self.model: Pipeline | None = None
         self.evaluation: EvaluationResult | None = None
+
+    def _dataset_fingerprint(self) -> dict:
+        stat = self.dataset_path.stat()
+        return {
+            "version": MODEL_VERSION,
+            "size": stat.st_size,
+            "mtime": stat.st_mtime,
+            "random_state": self.random_state,
+            "test_size": self.test_size,
+        }
+
+    # Load a saved model when it matches the current dataset; otherwise train and save one.
+    def load_or_train(self, model_path: Path = MODEL_PATH) -> None:
+        model_path = Path(model_path)
+        fingerprint = self._dataset_fingerprint()
+        if model_path.exists():
+            try:
+                saved = joblib.load(model_path)
+                if saved.get("fingerprint") == fingerprint:
+                    self.model, self.evaluation = saved["model"], saved["evaluation"]
+                    return
+            except Exception as exc:  # corrupt file or incompatible scikit-learn version
+                print(f"[warn] could not load saved model ({exc}); retraining")
+        print("Training text classifier (one-time; saved for later runs)...")
+        self.train_and_evaluate()
+        self.save(model_path, fingerprint)
+
+    def save(self, model_path: Path = MODEL_PATH, fingerprint: dict | None = None) -> None:
+        model_path = Path(model_path)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(
+            {
+                "fingerprint": fingerprint or self._dataset_fingerprint(),
+                "model": self.model,
+                "evaluation": self.evaluation,
+            },
+            model_path,
+        )
 
     # Tune candidate text classifiers and evaluate the winner on held-out data.
     def train_and_evaluate(self) -> EvaluationResult:
@@ -132,10 +268,10 @@ class PhishingDetector:
         )
         return self.evaluation
 
-    # Classify a message and return its spam probability and extracted URLs.
+    # Classify a message: spam probability, phishing categories, and suspicious URLs.
     def analyze(self, text: str) -> PhishingAnalysis:
         if self.model is None:
-            self.train_and_evaluate()
+            self.load_or_train()
         assert self.model is not None
 
         prediction = str(self.model.predict([text])[0])
@@ -143,13 +279,16 @@ class PhishingDetector:
         classes = list(self.model.classes_)
         spam_probability = float(probabilities[classes.index("spam")])
         urls = _extract_urls(text)
+        suspicious_urls = [url for url in urls if _is_suspicious_url(url)]
+        categories, keywords = categorize(text)
         return PhishingAnalysis(
             text=text,
             score=round(spam_probability * 100),
-            matched_categories=["machine_learning"] if prediction == "spam" else [],
+            matched_keywords=keywords,
+            matched_categories=categories,
             urls=urls,
-            suspicious_urls=[url for url in urls if _is_suspicious_url(url)],
-            is_likely_phishing=prediction == "spam",
+            suspicious_urls=suspicious_urls,
+            is_likely_phishing=is_phishing(prediction == "spam", categories, suspicious_urls),
         )
 
     # Classify non-empty CSV text rows and analyze any URL in each photo_key field.
@@ -186,6 +325,7 @@ def analyze_text(text: str) -> PhishingAnalysis:
 if __name__ == "__main__":
     detector = PhishingDetector()
     results = detector.train_and_evaluate()
+    detector.save()
     print(f"Holdout accuracy: {results.accuracy:.2%}")
     print(f"Best parameters: {results.best_params}")
     print("Confusion matrix (rows: ham, spam; columns: ham, spam):")

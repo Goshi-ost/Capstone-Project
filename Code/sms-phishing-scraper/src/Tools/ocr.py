@@ -4,7 +4,6 @@ import csv
 import io
 import os
 import re
-import sqlite3
 import unicodedata
 from pathlib import Path
 
@@ -13,6 +12,7 @@ import requests
 from PIL import Image, ImageFilter, ImageOps, ImageStat
 
 from ..configs import config
+from . import storage
 
 if config.TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = config.TESSERACT_CMD
@@ -143,7 +143,7 @@ def is_image_url(url: str) -> bool:
 # Download an image URL and decode it as RGB, returning None when fetching or decoding fails.
 def download_image(url: str, timeout: int = 10) -> Image.Image | None:
     try:
-        resp = requests.get(url, timeout=timeout)
+        resp = requests.get(url, timeout=timeout, headers={"User-Agent": config.HTTP_USER_AGENT})
         resp.raise_for_status()
         return Image.open(io.BytesIO(resp.content)).convert("RGB")
     except Exception:
@@ -217,7 +217,7 @@ def cache_image(url: str, post_id: str) -> str | None:
     return path
 
 
-# OCR image blobs from SQLite and export each image key and extracted text to CSV.
+# Export each stored image's OCR text to CSV, running OCR only for images not yet cached.
 def export_database_images_to_csv(
     db_path: str | None = None,
     csv_path: str | None = None,
@@ -228,23 +228,26 @@ def export_database_images_to_csv(
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    exported = 0
-    connection = sqlite3.connect(source_db)
-    try:
-        with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
-            writer = csv.DictWriter(output_file, fieldnames=("photo_key", "text"))
-            writer.writeheader()
-            rows = connection.execute(
-                "SELECT image_key, image_data FROM images ORDER BY image_key"
-            )
-            for image_key, image_data in rows:
-                try:
-                    image = Image.open(io.BytesIO(image_data)).convert("RGB")
-                    text = extract_text_from_image(image)
-                except Exception:
-                    text = ""
-                writer.writerow({"photo_key": image_key, "text": text})
-                exported += 1
-    finally:
-        connection.close()
-    return exported
+    storage.init_db(source_db)
+    with storage.get_connection(source_db) as conn:
+        # Backfill images saved before OCR text was cached (one at a time to limit memory).
+        pending = [row[0] for row in conn.execute("SELECT image_key FROM images WHERE ocr_text IS NULL")]
+        for image_key in pending:
+            (image_data,) = conn.execute(
+                "SELECT image_data FROM images WHERE image_key = ?", (image_key,)
+            ).fetchone()
+            try:
+                text = extract_text_from_image(Image.open(io.BytesIO(image_data)).convert("RGB"))
+            except Exception:
+                text = ""
+            conn.execute("UPDATE images SET ocr_text = ? WHERE image_key = ?", (text, image_key))
+            conn.commit()
+
+        rows = conn.execute("SELECT image_key, ocr_text FROM images ORDER BY image_key").fetchall()
+
+    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=("photo_key", "text"))
+        writer.writeheader()
+        for image_key, text in rows:
+            writer.writerow({"photo_key": image_key, "text": text or ""})
+    return len(rows)

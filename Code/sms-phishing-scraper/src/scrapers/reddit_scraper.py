@@ -1,11 +1,26 @@
-import praw
+"""Reddit scraper using the official API through PRAW (needs REDDIT_CLIENT_ID / SECRET).
 
-from ..Tools import ocr, phishing_detector, storage
+Preferred over the public RSS feed when credentials exist: higher rate limits, no
+blocking, gallery support, and exact post timestamps.
+"""
+
+import html
+from datetime import datetime, timezone
+
+import praw
+import prawcore
+
+from .. import pipeline
 from ..configs import config
+from ..Tools import ocr
+
+
+def has_credentials() -> bool:
+    return bool(config.REDDIT_CLIENT_ID and config.REDDIT_CLIENT_SECRET)
 
 
 def get_reddit_client() -> praw.Reddit:
-    if not config.REDDIT_CLIENT_ID or not config.REDDIT_CLIENT_SECRET:
+    if not has_credentials():
         raise RuntimeError(
             "Missing Reddit API credentials. Copy .env.example to .env and fill in "
             "REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET from https://www.reddit.com/prefs/apps"
@@ -17,55 +32,40 @@ def get_reddit_client() -> praw.Reddit:
     )
 
 
-def _gather_post_text(submission) -> str:
-    parts = [submission.title or "", submission.selftext or ""]
+# Collect the direct image URL and any gallery images, without duplicates.
+def _image_urls(submission) -> list[str]:
+    urls = []
+    url = getattr(submission, "url", "") or ""
+    if ocr.is_image_url(url):
+        urls.append(url)
 
-    # Screenshots of scam texts are usually attached as an image URL
-    if getattr(submission, "url", None) and ocr.is_image_url(submission.url):
-        parts.append(ocr.extract_text_from_url(submission.url))
-
-    # Gallery posts have multiple images
     if getattr(submission, "is_gallery", False):
-        try:
-            media_ids = [item["media_id"] for item in submission.gallery_data["items"]]
-            for media_id in media_ids:
-                meta = submission.media_metadata.get(media_id, {})
-                image_url = meta.get("s", {}).get("u", "").replace("&amp;", "&")
-                if image_url:
-                    parts.append(ocr.extract_text_from_url(image_url))
-        except Exception:
-            pass
-
-    return "\n".join(p for p in parts if p)
+        items = (getattr(submission, "gallery_data", None) or {}).get("items", [])
+        metadata = getattr(submission, "media_metadata", None) or {}
+        for item in items:
+            image_url = metadata.get(item.get("media_id"), {}).get("s", {}).get("u", "")
+            if image_url:
+                urls.append(html.unescape(image_url))
+    return list(dict.fromkeys(urls))
 
 
 def scan_subreddit(reddit: praw.Reddit, subreddit_name: str, limit: int = 50) -> list[dict]:
-    subreddit = reddit.subreddit(subreddit_name)
     flagged = []
-
-    for submission in subreddit.new(limit=limit):
-        text = _gather_post_text(submission)
-        if not text.strip():
-            continue
-
-        analysis = phishing_detector.analyze_text(text)
-        storage.save_result(
-            source=f"reddit/{subreddit_name}",
-            post_id=submission.id,
-            permalink=f"https://reddit.com{submission.permalink}",
-            analysis=analysis,
-        )
-
-        if analysis.is_likely_phishing:
-            flagged.append(
-                {
-                    "post_id": submission.id,
-                    "permalink": f"https://reddit.com{submission.permalink}",
-                    "score": analysis.score,
-                    "matched_categories": analysis.matched_categories,
-                }
+    try:
+        for submission in reddit.subreddit(subreddit_name).new(limit=limit):
+            posted_at = datetime.fromtimestamp(submission.created_utc, tz=timezone.utc).isoformat()
+            hit = pipeline.process_post(
+                source=f"reddit/{subreddit_name}",
+                post_id=submission.id,
+                permalink=f"https://www.reddit.com{submission.permalink}",
+                text=f"{submission.title or ''}\n{submission.selftext or ''}",
+                image_urls=_image_urls(submission),
+                posted_at=posted_at,
             )
-
+            if hit:
+                flagged.append(hit)
+    except prawcore.exceptions.PrawcoreException as exc:
+        print(f"[warn] reddit r/{subreddit_name} failed: {exc}")
     return flagged
 
 

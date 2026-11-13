@@ -1,70 +1,93 @@
-# SMS Phishing Scraper (Reddit)
+# SMS Phishing Scraper
 
-Scrapes Reddit posts (screenshots + text) from scam-reporting subreddits, runs OCR on
-attached images, and scores the combined text for common SMS phishing patterns
-(urgency language, account-suspension scams, delivery scams, financial/gift-card scams,
-credential-harvesting links, suspicious/shortened URLs).
+Collects phishing SMS screenshots that people post publicly on social media, extracts
+the message text with OCR, and classifies it as phishing or not, with a lure type
+(delivery, banking, toll, credentials, prize, government, crypto, job, impersonation).
 
-This is a research/detection heuristic tool, not a production anti-fraud system —
-treat flagged results as candidates for review, not definitive verdicts.
+This is a research tool, not a production anti-fraud system. Treat flagged results as
+candidates for review, not verdicts.
+
+**Sources today:** Reddit (official API if credentials are set, else the public RSS feed),
+Mastodon hashtag timelines, Lemmy search. X, Facebook and Instagram are not implemented yet.
 
 ## Setup
 
-1. Create a Reddit API app at https://www.reddit.com/prefs/apps (choose "script" type)
-   to get a client ID and secret. No paid tier needed.
-2. Install [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) (Windows installer)
-   and note its install path if it's not on your PATH.
-3. Copy `.env.example` to `.env` and fill in your Reddit credentials and (if needed)
-   `TESSERACT_CMD`.
-4. Install dependencies:
+1. Install [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) (Windows installer).
+2. Copy `.env.example` to `.env` and fill it in. Reddit credentials come from
+   https://www.reddit.com/prefs/apps (choose "script"). Without them, Reddit falls back
+   to the RSS feed, which Reddit rate-limits heavily (HTTP 429).
+3. Install dependencies:
 
    ```powershell
    python -m venv .venv
    .venv\Scripts\Activate.ps1
-   pip install -r src/requirements.txt
+   pip install -r src/configs/requirements.txt
    ```
 
 ## Run
 
-```powershell
-python main.py
-```
-
-Results are stored in `data/results.db` (SQLite). Flagged posts are also printed to the console.
-The OCR export is written to `src/List.crv` with `photo_key` and cleaned `text` columns.
-
-The SMS detector trains a TF-IDF text classifier from `Resources/spam.csv`, tunes its
-hyperparameters with five-fold cross-validation on a randomized 90% training split, and
-reports accuracy and spam/ham metrics on the held-out 10%. Run it from this directory to
-view the evaluation and selected parameters:
+Run everything from this folder (`Code/sms-phishing-scraper`):
 
 ```powershell
-python src/phishing_detector.py
+python main.py                              # scrape, OCR, classify, store, export
+python -m pytest                            # run the tests
+python src/Tools/phishing_detector.py       # retrain the text model and print its evaluation
 ```
 
-To add images for the OCR export, store their bytes in the SQLite `images` table:
+The first run trains the text model (a few minutes) and saves it to
+`data/models/text_classifier.joblib`; later runs load it. It retrains automatically if
+`Resources/spam.csv` changes.
 
-```sql
-INSERT INTO images (image_key, image_data, source)
-VALUES ('photo-001', readfile('path/to/photo.png'), 'example');
-```
+## How a post is processed
 
-The `image_key` is copied into the CSV as `photo_key`, keeping each extracted text value
-linked to the image it came from.
+`src/pipeline.py` handles every post the same way, whichever scraper found it:
+
+1. **Skip** it if it is already in the database, before downloading anything.
+2. **Download and OCR** its images. Images and their OCR text are stored together.
+3. **Classify** the screenshot (OCR) text. The poster's own title/caption is only
+   classified when there is no image text, because it usually *describes* a scam rather
+   than being one. The `text_source` column records which was used.
+4. **Store** the result, including the post's original publish time (`posted_at`).
+
+### How "phishing" is decided
+
+The ML model (TF-IDF + Naive Bayes / logistic regression, tuned with 5-fold
+cross-validation, evaluated on a 10% holdout) is trained on the UCI SMS Spam Collection.
+It detects *spam*, and much spam is marketing, so a message is flagged only when:
+
+- the model says spam **and** the text matches a phishing lure category or has a
+  suspicious link; **or**
+- the text matches a lure category **and** has a suspicious link, whatever the model says.
+  This is needed because the 2012-era training data misses modern smishing (it scores a
+  typical E-ZPass toll scam at about 11% spam).
+
+Suspicious links: URL shorteners, raw IP addresses, punycode (`xn--`) lookalike domains,
+and TLDs commonly abused in smishing (`.top`, `.xyz`, `.icu`, ...). Lure categories and
+their keywords are in `PHISHING_CATEGORIES` in `src/Tools/phishing_detector.py`.
+
+**Known limitation:** the real fix is training on labeled modern phishing messages.
+
+## Data
+
+- `data/results.db` (SQLite): `results` (one row per post) and `images` (image bytes plus
+  cached OCR text). Older databases are upgraded automatically on start.
+- `src/crv-files/List.crv`: CSV export of every stored image's OCR text (`photo_key`, `text`).
 
 ## Project layout
 
-- `src/config.py` — env config, default subreddits
-- `src/ocr.py` — image download, text extraction, cleanup, and SQLite-to-CSV export
-- `src/phishing_detector.py` — tuned TF-IDF SMS spam classifier and evaluation
-- `src/reddit_scraper.py` — pulls posts from subreddits via PRAW, extracts text/images
-- `src/storage.py` — SQLite persistence
-- `main.py` — entry point
+- `main.py`: entry point
+- `src/pipeline.py`: shared per-post pipeline, polite HTTP helper (honest User-Agent, 429 retry)
+- `src/scrapers/reddit_scraper.py`: Reddit via the official API (PRAW)
+- `src/scrapers/public_scraper.py`: keyless Reddit RSS, Mastodon and Lemmy
+- `src/Tools/ocr.py`: image preprocessing, OCR, text cleanup, CSV export
+- `src/Tools/phishing_detector.py`: text model, lure categories, URL checks
+- `src/Tools/smsImageClassifier.py`: SMS-screenshot vs. other-image classifier (not trained or wired in yet)
+- `src/Tools/storage.py`: SQLite storage
+- `src/configs/config.py`: settings from `.env`, source lists, paths
+- `tests/`: pytest suite
 
-## Notes on X (Twitter)
+## Adding a platform
 
-X's official API v2 has a free tier but is heavily rate-limited, and unofficial
-scraping tools frequently break due to anti-bot enforcement and may violate X's
-Terms of Service. This project currently targets Reddit only; adding X support
-later is straightforward (a `src/x_scraper.py` following the same pattern) once
-you decide on an API-based approach.
+Add `src/scrapers/<platform>_scraper.py` that fetches posts and calls
+`pipeline.process_post(source, post_id, permalink, text, image_urls, posted_at)` for each,
+then call it from `main.py`. Dedupe, OCR, classification and storage come for free.

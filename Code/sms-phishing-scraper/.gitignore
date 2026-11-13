@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 data/*.db
 data/images/
+data/models/
+.pytest_cache/
