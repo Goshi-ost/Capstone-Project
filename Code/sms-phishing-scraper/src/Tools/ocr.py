@@ -150,13 +150,18 @@ def download_image(url: str, timeout: int = 10) -> Image.Image | None:
         return None
 
 
+def extract_text_from_image_strict(image: Image.Image) -> str:
+    """Run OCR and propagate errors to callers that need to distinguish failures."""
+    prepared = preprocess_image(image)
+    return clean_ocr_text(
+        pytesseract.image_to_string(prepared, config=TESSERACT_CONFIG)
+    )
+
+
 # Run OCR on a preprocessed image and normalize the recognized text.
 def extract_text_from_image(image: Image.Image) -> str:
     try:
-        prepared = preprocess_image(image)
-        return clean_ocr_text(
-            pytesseract.image_to_string(prepared, config=TESSERACT_CONFIG)
-        )
+        return extract_text_from_image_strict(image)
     except Exception:
         return ""
 

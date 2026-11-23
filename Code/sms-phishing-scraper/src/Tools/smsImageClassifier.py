@@ -3,11 +3,11 @@
 Approach: transfer learning. A ResNet18 pretrained on ImageNet is fine-tuned
 with a new 2-class head on labelled screenshots.
 
-Updated to work with flat directory of SMS images (images_out/).
-Generates synthetic non-SMS images for the negative class during training.
+Uses labelled SMS and non-SMS image directories. When no non-SMS directory
+is provided, synthetic non-SMS images are generated instead.
 
 Usage:
-    python smsImageClassifier.py train --data ../../Resources/images_out --epochs 15
+    python smsImageClassifier.py train --data ../../Resources/smsMessages --non-sms-data ../../Resources/NonSMSMessages
     python smsImageClassifier.py predict path/to/image.png [more.png ...]
 
 Requires: pip install torch torchvision
@@ -15,6 +15,7 @@ Requires: pip install torch torchvision
 """
 
 import argparse
+import hashlib
 import os
 import random
 from pathlib import Path
@@ -28,6 +29,7 @@ from torchvision import models, transforms
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "sms_image_classifier.pt")
 IMG_SIZE = 224
 MEAN, STD = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 train_tf = transforms.Compose([
 	transforms.Resize((IMG_SIZE, IMG_SIZE)),
@@ -96,14 +98,17 @@ def generate_synthetic_non_sms(img_size=IMG_SIZE):
 
 
 class SMSClassifierDataset(Dataset):
-	"""Dataset combining real SMS images with synthetic non-SMS images."""
+	"""Dataset combining SMS images with real or synthetic non-SMS images."""
 	
-	def __init__(self, sms_image_paths, num_synthetic=None, transform=None, is_train=True):
+	def __init__(self, sms_image_paths, num_synthetic=None, transform=None, is_train=True, non_sms_image_paths=None):
 		self.sms_paths = sms_image_paths
+		self.non_sms_paths = non_sms_image_paths
 		self.transform = transform
 		self.is_train = is_train
 		
-		if num_synthetic is None:
+		if self.non_sms_paths is not None:
+			num_synthetic = 0
+		elif num_synthetic is None:
 			num_synthetic = len(sms_image_paths)
 		
 		self.num_synthetic = num_synthetic
@@ -114,22 +119,23 @@ class SMSClassifierDataset(Dataset):
 				self.synthetic_cache[i] = generate_synthetic_non_sms()
 	
 	def __len__(self):
-		return len(self.sms_paths) + self.num_synthetic
+		return len(self.sms_paths) + (len(self.non_sms_paths) if self.non_sms_paths is not None else self.num_synthetic)
 	
 	def __getitem__(self, idx):
 		if idx < len(self.sms_paths):
-			img_path = self.sms_paths[idx]
-			try:
-				img = Image.open(img_path).convert('RGB')
-			except Exception:
-				img = generate_synthetic_non_sms()
+			with Image.open(self.sms_paths[idx]) as image:
+				img = image.convert('RGB')
 			label = 0
+		elif self.non_sms_paths is not None:
+			with Image.open(self.non_sms_paths[idx - len(self.sms_paths)]) as image:
+				img = image.convert('RGB')
+			label = 1
 		else:
 			synthetic_idx = idx - len(self.sms_paths)
 			if self.is_train:
 				img = generate_synthetic_non_sms()
 			else:
-				img = self.synthetic_cache.get(synthetic_idx, generate_synthetic_non_sms())
+				img = self.synthetic_cache[synthetic_idx]
 			label = 1
 		
 		if self.transform:
@@ -138,37 +144,55 @@ class SMSClassifierDataset(Dataset):
 		return img, label
 
 
-# Train the image classifier and save the checkpoint with the best validation accuracy.
-def train(data_dir, epochs=15, batch_size=32, lr=1e-3, val_split=0.2, model_path=MODEL_PATH):
-	device = _device()
-	print(f"Using device: {device}")
-	
-	# Collect all image paths from flat directory
+def _unique_images(data_dir):
 	data_dir = Path(data_dir)
-	image_paths = list(data_dir.glob('*.jpg')) + list(data_dir.glob('*.png'))
-	image_paths = [str(p) for p in image_paths]
-	
-	print(f"Found {len(image_paths)} SMS images")
-	
-	if len(image_paths) == 0:
+	if not data_dir.is_dir():
+		raise ValueError(f"Image directory does not exist: {data_dir}")
+	images = {}
+	for path in sorted(data_dir.iterdir()):
+		if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
+			digest = hashlib.sha256(path.read_bytes()).digest()
+			images.setdefault(digest, path)
+	if not images:
 		raise ValueError(f"No images found in {data_dir}")
-	
-	# Split into train and validation
-	n_val = max(1, int(len(image_paths) * val_split))
+	return images
+
+
+def _split_images(paths, val_split):
+	if len(paths) < 2:
+		raise ValueError("Each image class must contain at least two unique images")
+	n_val = min(len(paths) - 1, max(1, int(len(paths) * val_split)))
 	train_idx, val_idx = random_split(
-		range(len(image_paths)), 
-		[len(image_paths) - n_val, n_val],
+		range(len(paths)), [len(paths) - n_val, n_val],
 		generator=torch.Generator().manual_seed(42),
 	)
-	
-	train_paths = [image_paths[i] for i in train_idx]
-	val_paths = [image_paths[i] for i in val_idx]
-	
-	print(f"Train: {len(train_paths)} SMS images + {len(train_paths)} synthetic")
-	print(f"Val: {len(val_paths)} SMS images + {len(val_paths)} synthetic")
-	
-	train_set = SMSClassifierDataset(train_paths, transform=train_tf, is_train=True)
-	val_set = SMSClassifierDataset(val_paths, transform=eval_tf, is_train=False)
+	return [paths[i] for i in train_idx], [paths[i] for i in val_idx]
+
+
+# Train the image classifier and save the checkpoint with the best validation accuracy.
+def train(data_dir, epochs=15, batch_size=32, lr=1e-3, val_split=0.2, model_path=MODEL_PATH, non_sms_dir=None):
+	device = _device()
+	print(f"Using device: {device}")
+	if not 0 < val_split < 1:
+		raise ValueError("val_split must be between 0 and 1")
+	sms_images = _unique_images(data_dir)
+	train_paths, val_paths = _split_images(list(sms_images.values()), val_split)
+	print(f"Found {len(sms_images)} unique SMS images")
+	train_non_sms = val_non_sms = None
+	if non_sms_dir is not None:
+		non_sms_images = _unique_images(non_sms_dir)
+		if sms_images.keys() & non_sms_images.keys():
+			raise ValueError("Identical images found in both SMS and non-SMS directories")
+		train_non_sms, val_non_sms = _split_images(list(non_sms_images.values()), val_split)
+		print(f"Found {len(non_sms_images)} unique non-SMS images")
+		print(f"Train: {len(train_paths)} SMS + {len(train_non_sms)} non-SMS")
+		print(f"Val: {len(val_paths)} SMS + {len(val_non_sms)} non-SMS")
+	else:
+		print(f"Train: {len(train_paths)} SMS images + {len(train_paths)} synthetic")
+		print(f"Val: {len(val_paths)} SMS images + {len(val_paths)} synthetic")
+
+	train_set = SMSClassifierDataset(train_paths, transform=train_tf, is_train=True, non_sms_image_paths=train_non_sms)
+	val_set = SMSClassifierDataset(val_paths, transform=eval_tf, is_train=False, non_sms_image_paths=val_non_sms)
 	
 	train_dl = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=0)
 	val_dl = DataLoader(val_set, batch_size=batch_size, num_workers=0)
@@ -256,7 +280,8 @@ def main():
 	sub = parser.add_subparsers(dest="cmd", required=True)
 	
 	t = sub.add_parser("train")
-	t.add_argument("--data", required=True, help="Path to images directory (e.g., ../../Resources/images_out)")
+	t.add_argument("--data", required=True, help="Path to SMS images directory")
+	t.add_argument("--non-sms-data", help="Path to non-SMS images directory; omit to use synthetic images")
 	t.add_argument("--epochs", type=int, default=15)
 	t.add_argument("--batch-size", type=int, default=32)
 	t.add_argument("--lr", type=float, default=1e-3)
@@ -269,7 +294,7 @@ def main():
 	args = parser.parse_args()
 
 	if args.cmd == "train":
-		train(args.data, epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, model_path=args.model)
+		train(args.data, epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, model_path=args.model, non_sms_dir=args.non_sms_data)
 	else:
 		clf = SmsImageClassifier(args.model)
 		for path in args.images:
