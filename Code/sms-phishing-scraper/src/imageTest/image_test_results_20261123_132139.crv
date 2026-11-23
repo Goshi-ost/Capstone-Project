@@ -1,4 +1,5 @@
 photo_key,image_label,image_confidence,ocr_text,spam_label,spam_score_percent,is_likely_phishing,matched_categories,suspicious_urls,status
+13.png,sms,0.999995231628418,"+1 (805) 419-0678 _. Siri Found a Contact @} Anna Add +1 (805) 419-0678 Text Message Monday 11:51 AM Evanie, I'm Anna, how have you been, I'm back in Denver. * 5 @ 6 &",ham,1,False,,,complete
 duck-7935858_960_720.jpg,non_sms,0.9998345375061035,,,,,,,not_sms
 Screenshot 2026-09-21 150255.png,non_sms,0.7121886610984802,,,,,,,not_sms
 Screenshot_28-9-2026_14509_www.bing.com.jpeg,sms,1.0,"Text Message Today 2:31PM FreeMSG-SPX FCU 1-833-763-2014: Reply YES or NO if you used credit card ending 5012, IC INSTACART, $436.00. STOP to opt out The sender is not in your contact list Report Junk",spam,92,True,banking,,complete
